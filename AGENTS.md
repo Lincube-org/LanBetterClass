@@ -64,7 +64,8 @@ requires recompiling the client.
 - `client/adapters/*` — out-of-process data sources: `a-fake` (scripted), `a-audiofile` (blob convention),
   `a-audio` (the real one: cpal capture + energy-VAD turns; `source: "fixture"` replays a wav through the
   same pipeline, which is what makes it testable on a runner with no sound card),
-  `a-screen` (keyframes: GDI BitBlt or DXGI desktop duplication + dHash change gate; `source: "fixture"`
+  `a-screen` (keyframes: GDI BitBlt, DXGI desktop duplication, or X11 `GetImage` of the composite overlay
+  when a compositor runs / the root window otherwise + dHash change gate; `source: "fixture"`
   replays a directory of PNGs through the same decide-and-store path — same trick, same reason).
 - `adapters.d/*.adapter.json` — per-environment load declarations (drop in = enable, rename = disable).
 
@@ -153,11 +154,15 @@ workflow, `.github/workflows/agent.yml`.
   lesson cut off mid-page still flushes its `trigger: "close"` tail frame plus `session.close` into that
   lesson, and the tuning loop over `screen.min_dist`. The reverse assertion is the point: "nothing changed"
   masquerading as "many changes" turns the evidence into thousands of near-identical screenshots nobody opens.
-  There is no `libasound2`-style dep — the device branch is guarded as "must not crash, must not invent blob
-  references", and ⑧ cross-checks the three copies of the backend list. On `windows-latest` that branch is not
-  hypothetical: `gdi` opens a real 1920×1080 desktop, writes one PNG (~2.3 MB), and reads 60 of 61 polls as
-  `unchanged` — so ③ doubles as a live check of the gates and the writer, while `ubuntu-latest` checks the
-  "no desktop" path. Neither checks a real all-in-one (multi-monitor, DPI, DXGI). When asserting
+  The device branch is no longer just "must not crash": on `windows-latest`, `gdi` opens a real 1920×1080
+  desktop, writes one PNG (~2.3 MB), and reads 60 of 61 polls as `unchanged` — so ③ doubles as a live check
+  of the gates and the writer. On `ubuntu-latest`, ⑨ starts an Xvfb (1280×720×24), flips the root background
+  twice via `xsetroot`, and asserts `capture=x11` really returns 1280×720 frames, sees both changes through
+  the `mad` gate, and closes with `stream_errors == 0`; ⑩ sets `WAYLAND_DISPLAY` and asserts the adapter
+  refuses instead of emitting a black-screen lesson. ⑧ cross-checks the three copies of the backend list.
+  This is why the Linux CI step installs `xvfb` / `x11-xserver-utils` / `x11-utils` at runtime — `x11rb` is
+  pure Rust, so there are still no X11 development headers in the build. Neither path checks a real
+  all-in-one (multi-monitor, DPI, DXGI, a real X11 desktop, or Wayland/PipeWire). When asserting
   "this source produced nothing", filter `events.ndjson` by `adapter_id`: the core writes its own facts
   into the same file (`core.admit` is ~1 KB per loaded source), so an unfiltered count reads "no desktop
   on this machine" as "emitted events but no close record" — two different diagnoses and two different fixes.

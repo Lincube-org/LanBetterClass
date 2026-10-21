@@ -1,18 +1,26 @@
-//! 抓屏后端。Windows 上两条路，用 `params.capture` 选：
+//! 抓屏后端。按平台选路，用 `params.capture` 选：
 //!
+//! Windows：
 //! - `gdi`  —— `GetDC` + `BitBlt` + `GetDIBits`。哪儿都能跑：RDP 远程协助、虚机、
 //!   基础显示驱动下都有画面，代价是只能轮询（每 poll 拷一次全屏，没人告诉你"变了"）。
 //! - `dxgi` —— `IDXGIOutputDuplication` 桌面复制。合成器直接交出帧，没有新帧时
 //!   `AcquireNextFrame` 立刻超时返回，几乎不花钱；但 RDP 会话与一些虚机里拿不到
 //!   复制接口，分辨率或模式一切换还会 `ACCESS_LOST`，必须重建。
 //! - `auto` —— 先试 DXGI，拿不到就退回 GDI，**并把"用的哪条 + 为什么退"写进 session.open**。
-//!   课后看回放时"这一节的帧是怎么来的"必须是可见的事实，不是猜测。
 //!
-//! 两条路的产物是同一种 RGB 帧，所以上层（变化检测、落盘、事件）完全不区分来源——
+//! Linux：
+//! - `x11`  —— `GetImage` 轮询。有合成器时抓 Composite overlay（根窗口此时只有背景），
+//!   没有合成器时抓根窗口。纯 Rust `x11rb`，不链 libxcb；多屏是拼接画面，
+//!   `monitor` 只支持 0（整屏）。Wayland 会话明确拒绝：XWayland 的根窗口不是整块桌面，
+//!   抓到的大概率是黑屏或局部，宁可在健康表里缺席，也不把"没采到"伪装成一节黑屏课。
+//! - `auto` —— 走 X11。
+//! - PipeWire / Wayland 抓屏尚未实现。
+//!
+//! 所有后端的产物都是同一种 RGB 帧，所以上层（变化检测、落盘、事件）完全不区分来源——
 //! 与 a-audio 的设备/回放路径同一个道理。
 //!
-//! 非 Windows 一律明确拒绝：那个源在这台机器上就是不存在，让它在健康表里缺席，
-//! 而不是假装采到一张黑屏。X11 / PipeWire 是另一次改动。
+//! 没有可用后端时一律明确拒绝：那个源在这台机器上就是不存在，让它在健康表里缺席，
+//! 而不是假装采到一张黑屏。
 
 pub struct Frame {
     pub width: usize,
@@ -39,11 +47,12 @@ pub struct Opened {
 }
 
 /// 观察端那个下拉框必须和这份清单一致（`.github/workflows/agent.yml` 有文本守卫钉它）。
-pub const BACKENDS: [&str; 3] = ["auto", "gdi", "dxgi"];
+/// 清单是"跨平台已知的全部取值"，具体哪条能在本机跑由 `open()` 按平台判断并明确报错。
+pub const BACKENDS: [&str; 4] = ["auto", "gdi", "dxgi", "x11"];
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn open(_want: &str, _monitor: usize) -> Result<Opened, String> {
-    Err("本机不是 Windows：抓屏后端只有 gdi / dxgi 两条，X11 / PipeWire 尚未实现".into())
+    Err("本机既不是 Windows 也不是 Linux：没有可用的设备抓屏后端（只有 fixture 回放）".into())
 }
 
 #[cfg(windows)]
@@ -51,10 +60,13 @@ pub fn open(want: &str, monitor: usize) -> Result<Opened, String> {
     match want {
         "gdi" => return gdi::opened(monitor).map(|b| Opened { backend: b, fallback: None }),
         "dxgi" => return dxgi::opened(monitor).map(|b| Opened { backend: b, fallback: None }),
+        "x11" => {
+            return Err("x11 只适用于 Linux；Windows 上用 auto / gdi / dxgi".into());
+        }
         "auto" => {}
         other => {
             // 未知取值不猜：写错的人要立刻知道，而不是"用另一条路安安静静采了一整节课"。
-            return Err(format!("params.capture 只认 auto / gdi / dxgi，收到 {other:?}"));
+            return Err(format!("params.capture 只认 auto / gdi / dxgi / x11，收到 {other:?}"));
         }
     }
     match dxgi::opened(monitor) {
@@ -63,6 +75,18 @@ pub fn open(want: &str, monitor: usize) -> Result<Opened, String> {
             Ok(b) => Ok(Opened { backend: b, fallback: Some(format!("DXGI 不可用，退回 GDI：{e}")) }),
             Err(e2) => Err(format!("两条路都不通：dxgi={e}；gdi={e2}")),
         },
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn open(want: &str, monitor: usize) -> Result<Opened, String> {
+    match want {
+        "x11" | "auto" => x11::opened(monitor),
+        "gdi" | "dxgi" => Err(format!("{want} 只适用于 Windows；Linux 上用 auto / x11")),
+        other => {
+            // 与 Windows 同一把尺：未知取值当场拒，不悄悄换一条路。
+            Err(format!("params.capture 只认 auto / gdi / dxgi / x11，收到 {other:?}"))
+        }
     }
 }
 
@@ -449,25 +473,310 @@ mod dxgi {
     }
 }
 
+#[cfg(target_os = "linux")]
+/// 把 X11 visual mask 下的颜色分量缩到 8 位。5/6 位通道直接截断会让纯白变成 248 之类：
+/// 颜色错了不会报错，只会让一整节课的关键帧颜色发闷。
+fn scale_component(raw: u32, mask: u32) -> u8 {
+    if mask == 0 {
+        return 0;
+    }
+    let shift = mask.trailing_zeros();
+    let max = mask >> shift;
+    let value = (raw & mask) >> shift;
+    ((value * 255 + max / 2) / max) as u8
+}
+
+#[cfg(target_os = "linux")]
+mod x11 {
+    use super::{scale_component, Backend, Frame};
+    use serde_json::json;
+    use x11rb::connection::Connection;
+    use x11rb::protocol::composite::ConnectionExt as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat};
+    use x11rb::rust_connection::RustConnection;
+
+    pub struct X11 {
+        conn: RustConnection,
+        drawable: u32,
+        display: String,
+        target: &'static str,
+        w: u16,
+        h: u16,
+        depth: u8,
+        bpp: u8,
+        stride: usize,
+        lsb: bool,
+        rmask: u32,
+        gmask: u32,
+        bmask: u32,
+        errs: usize,
+    }
+
+    pub fn opened(monitor: usize) -> Result<super::Opened, String> {
+        let (x, fallback) = X11::open(monitor)?;
+        Ok(super::Opened { backend: Box::new(x) as Box<dyn Backend>, fallback })
+    }
+
+    /// 有合成器时根窗口只有背景：窗口被重定向到离屏 pixmap，由合成器画进 overlay。
+    /// 用 EWMH 的选择持有者判断"有没有合成器在跑"，不要猜。
+    fn compositor_running(conn: &RustConnection) -> Result<bool, String> {
+        let atom = conn
+            .intern_atom(false, b"_NET_WM_CM_S0")
+            .map_err(|e| format!("X11 InternAtom(_NET_WM_CM_S0) 失败：{e}"))?
+            .reply()
+            .map_err(|e| format!("X11 InternAtom(_NET_WM_CM_S0) 回包失败：{e}"))?
+            .atom;
+        let owner = conn
+            .get_selection_owner(atom)
+            .map_err(|e| format!("X11 GetSelectionOwner 失败：{e}"))?
+            .reply()
+            .map_err(|e| format!("X11 GetSelectionOwner 回包失败：{e}"))?
+            .owner;
+        Ok(owner != 0)
+    }
+
+    fn overlay_window(conn: &RustConnection, root: u32) -> Result<Option<u32>, String> {
+        conn.composite_query_version(0, 4)
+            .map_err(|e| format!("X11 CompositeQueryVersion 失败：{e}"))?
+            .reply()
+            .map_err(|e| format!("X11 Composite 扩展不可用：{e}"))?;
+        let reply = conn
+            .composite_get_overlay_window(root)
+            .map_err(|e| format!("X11 CompositeGetOverlayWindow 失败：{e}"))?
+            .reply()
+            .map_err(|e| format!("X11 CompositeGetOverlayWindow 回包失败：{e}"))?;
+        Ok((reply.overlay_win != 0).then_some(reply.overlay_win))
+    }
+
+    impl X11 {
+        fn open(monitor: usize) -> Result<(Self, Option<String>), String> {
+            if monitor != 0 {
+                return Err(format!(
+                    "Linux X11 只抓整个根窗口（monitor=0），收到 {monitor}；多屏在根窗口里是拼接画面"
+                ));
+            }
+            // Wayland 下 XWayland 的根窗口不是整块桌面，抓到的多半是黑屏或局部。
+            // 宁可让这个源从健康表缺席，也不把"没采到"伪装成一节黑屏课。
+            let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+                || std::env::var("XDG_SESSION_TYPE")
+                    .map(|v| v.eq_ignore_ascii_case("wayland"))
+                    .unwrap_or(false);
+            if wayland {
+                return Err(
+                    "当前是 Wayland 会话：X11 只能抓到 XWayland 的根窗口，不是整块桌面。请切到 X11 会话，或等待 PipeWire 后端。"
+                        .into(),
+                );
+            }
+            let display = std::env::var("DISPLAY").unwrap_or_default();
+            let (conn, screen_num) = x11rb::connect(None)
+                .map_err(|e| format!("连不上 X11 display（DISPLAY={display:?}）：{e}"))?;
+            let (root, w, h, depth, bpp, stride, lsb, (rmask, gmask, bmask)) = {
+                let setup = conn.setup();
+                let screen = &setup.roots[screen_num];
+                if screen.width_in_pixels == 0 || screen.height_in_pixels == 0 {
+                    return Err(format!(
+                        "X11 根窗口尺寸是 {}x{}，没有可采的桌面",
+                        screen.width_in_pixels, screen.height_in_pixels
+                    ));
+                }
+                let visual = screen
+                    .allowed_depths
+                    .iter()
+                    .flat_map(|d| d.visuals.iter())
+                    .find(|v| v.visual_id == screen.root_visual)
+                    .ok_or_else(|| {
+                        format!("X11 根窗口的 visual {} 不在 allowed_depths 里", screen.root_visual)
+                    })?;
+                let fmt = setup
+                    .pixmap_formats
+                    .iter()
+                    .find(|f| f.depth == screen.root_depth)
+                    .ok_or_else(|| format!("X11 没有 depth {} 的 pixmap 格式", screen.root_depth))?;
+                if !matches!(fmt.bits_per_pixel, 16 | 24 | 32) {
+                    return Err(format!(
+                        "X11 像素格式 {} bpp 暂不支持（只支持 16 / 24 / 32）",
+                        fmt.bits_per_pixel
+                    ));
+                }
+                if visual.red_mask == 0 && visual.green_mask == 0 && visual.blue_mask == 0 {
+                    return Err("X11 根窗口的 visual 没有 RGB mask（伪彩？），无法还原颜色".into());
+                }
+                let pad = fmt.scanline_pad as usize;
+                if pad == 0 {
+                    return Err("X11 pixmap 格式的 scanline_pad 是 0，无法算行距".into());
+                }
+                let stride = (screen.width_in_pixels as usize * fmt.bits_per_pixel as usize)
+                    .div_ceil(pad)
+                    * pad
+                    / 8;
+                (
+                    screen.root,
+                    screen.width_in_pixels,
+                    screen.height_in_pixels,
+                    screen.root_depth,
+                    fmt.bits_per_pixel,
+                    stride,
+                    u8::from(setup.image_byte_order) == 0,
+                    (visual.red_mask, visual.green_mask, visual.blue_mask),
+                )
+            };
+            let (drawable, target, fallback) = if compositor_running(&conn)? {
+                match overlay_window(&conn, root) {
+                    Ok(Some(win)) => (win, "composite-overlay", None),
+                    Ok(None) => (
+                        root,
+                        "root",
+                        Some("合成器在跑但 Composite overlay 是 0，退回根窗口".to_string()),
+                    ),
+                    Err(e) => (
+                        root,
+                        "root",
+                        Some(format!("合成器在跑但拿不到 Composite overlay，退回根窗口：{e}")),
+                    ),
+                }
+            } else {
+                (root, "root", None)
+            };
+            eprintln!(
+                "[a-screen] X11 就绪：display={display} {target} {w}x{h}，depth={depth}，{bpp}bpp，{} 字节/行",
+                stride
+            );
+            Ok((
+                X11 {
+                    conn,
+                    drawable,
+                    display,
+                    target,
+                    w,
+                    h,
+                    depth,
+                    bpp,
+                    stride,
+                    lsb,
+                    rmask,
+                    gmask,
+                    bmask,
+                    errs: 0,
+                },
+                fallback,
+            ))
+        }
+    }
+
+    impl Backend for X11 {
+        fn grab(&mut self) -> Result<Option<Frame>, String> {
+            let reply = match self
+                .conn
+                .get_image(ImageFormat::Z_PIXMAP, self.drawable, 0, 0, self.w, self.h, !0)
+                .map_err(|e| format!("X11 GetImage 请求失败：{e}"))
+                .and_then(|c| c.reply().map_err(|e| format!("X11 GetImage 回包失败：{e}")))
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    self.errs += 1;
+                    return Err(e);
+                }
+            };
+            if reply.depth != self.depth {
+                self.errs += 1;
+                return Err(format!(
+                    "X11 GetImage 回来的 depth 是 {}，预期 {}（overlay 与根窗口格式不一致）",
+                    reply.depth, self.depth
+                ));
+            }
+            let (w, h, bpp) = (self.w as usize, self.h as usize, self.bpp as usize);
+            let bytes_per_pixel = bpp / 8;
+            let need = self.stride * h;
+            if reply.data.len() < need || bytes_per_pixel == 0 {
+                self.errs += 1;
+                return Err(format!(
+                    "X11 GetImage 回了 {} 字节，{w}x{h}@{bpp}bpp 至少要 {need}",
+                    reply.data.len()
+                ));
+            }
+            let mut rgb = Vec::with_capacity(w * h * 3);
+            for y in 0..h {
+                let row = &reply.data[y * self.stride..y * self.stride + w * bytes_per_pixel];
+                for x in 0..w {
+                    let p = &row[x * bytes_per_pixel..(x + 1) * bytes_per_pixel];
+                    let raw = if self.lsb {
+                        p.iter().enumerate().fold(0u32, |acc, (i, b)| acc | ((*b as u32) << (8 * i)))
+                    } else {
+                        p.iter().fold(0u32, |acc, b| (acc << 8) | *b as u32)
+                    };
+                    rgb.push(scale_component(raw, self.rmask));
+                    rgb.push(scale_component(raw, self.gmask));
+                    rgb.push(scale_component(raw, self.bmask));
+                }
+            }
+            Ok(Some(Frame { width: w, height: h, rgb }))
+        }
+
+        fn describe(&self) -> serde_json::Value {
+            json!({
+                "backend": "x11",
+                "monitor": 0,
+                "display": self.display,
+                "target": self.target,
+                "width": self.w as u64,
+                "height": self.h as u64,
+                "depth": self.depth,
+                "bits_per_pixel": self.bpp,
+                "note": "X11 有合成器时抓 composite overlay，否则抓根窗口；多屏为拼接画面，Wayland / PipeWire 未实现",
+            })
+        }
+
+        fn errors(&self) -> usize {
+            self.errs
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn backend_list_is_the_contract_the_ui_copies() {
-        assert_eq!(BACKENDS, ["auto", "gdi", "dxgi"]);
+        assert_eq!(BACKENDS, ["auto", "gdi", "dxgi", "x11"]);
     }
 
     #[test]
     fn an_unknown_capture_is_refused_not_silently_switched() {
-        // 非 Windows 上 open() 恒拒（连清单都不查），所以这条只在 Windows 侧断行为，
-        // 另一侧断"这台机器上这个源确实起不来"。
         // 不用 unwrap_err：它要求 Ok 那一侧（Opened）也实现 Debug，而 Box<dyn Backend> 不满足。
-        let e = open("x11", 0).err().expect("清单外的后端必须被当场拒，不能悄悄换一条路");
-        #[cfg(windows)]
+        let e = open("quartz", 0).err().expect("清单外的后端必须被当场拒，不能悄悄换一条路");
+        #[cfg(any(windows, target_os = "linux"))]
         assert!(e.contains("capture"), "{e}");
-        #[cfg(not(windows))]
-        assert!(e.contains("不是 Windows"), "{e}");
+        #[cfg(not(any(windows, target_os = "linux")))]
+        assert!(e.contains("可用的设备抓屏"), "{e}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn linux_backend_is_refused_on_windows() {
+        let e = open("x11", 0).err().expect("x11 不该在 Windows 上被接受");
+        assert!(e.contains("Linux"), "{e}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn windows_only_backends_are_refused_on_linux() {
+        let e = open("gdi", 0).err().expect("gdi 不该在 Linux 上被接受");
+        assert!(e.contains("Windows"), "{e}");
+        let e = open("dxgi", 0).err().expect("dxgi 不该在 Linux 上被接受");
+        assert!(e.contains("Windows"), "{e}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn x11_components_are_scaled_not_truncated() {
+        // 8 位通道原样；5 / 6 位通道的最大值必须回到 255，不能停在 248 / 252。
+        assert_eq!(scale_component(0x00ff0000, 0x00ff0000), 255);
+        assert_eq!(scale_component(0x0000f800, 0x0000f800), 255);
+        assert_eq!(scale_component(0x0000003f, 0x0000003f), 255);
+        assert_eq!(scale_component(0, 0x00ff0000), 0);
+        // 缺通道（伪彩 / 灰度 visual）不 panic，按 0 处理。
+        assert_eq!(scale_component(0xffffffff, 0), 0);
     }
 
     #[test]

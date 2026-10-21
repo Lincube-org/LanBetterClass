@@ -728,8 +728,8 @@ const SCREEN_FIELDS = [
   ["max_bytes_per_lesson", "单节字节上限（0 = 不限）"],
 ];
 const SCREEN_TOP_FIELDS = [["monitor", "显示器序号 monitor（0 = 主屏）"]];
-// 这三个取值就是 capture.rs 的 BACKENDS，改动必须同步——ci-screen.sh 第 ⑧ 场钉的就是它。
-const SCREEN_SELECTS = [["capture", "抓屏后端 capture", ["auto", "gdi", "dxgi"]]];
+// 这四个取值就是 capture.rs 的 BACKENDS，改动必须同步——ci-screen.sh 第 ⑧ 场钉的就是它。
+const SCREEN_SELECTS = [["capture", "抓屏后端 capture", ["auto", "gdi", "dxgi", "x11"]]];
 const SCREEN_BOOLS = [["emit_dirty", "随帧报变化区 bbox emit_dirty"]];
 
 function fmtMs(ms) {
@@ -953,7 +953,7 @@ function screenTuneRow(a, effPayload) {
     "两道门限是“或”的关系：任一过了就落盘。dHash 看不见“整块变亮变暗”，均差看不见“同位格换了内容”，所以两个各管一头；要真降帧数，两个都得抬。"
   ));
   body.appendChild(mk("div", "tune-eff", "poll_ms 只决定多久问一次屏（不越门限就不落盘）；真正拉高帧数的是 min_interval_ms 与两道门限。"));
-  body.appendChild(mk("div", "tune-eff", "capture=auto 时 DXGI 起不来会退到 GDI，并在自述里说清楚；只指定一条后端时，它起不来就是整节课真的没帧。"));
+  body.appendChild(mk("div", "tune-eff", "平台限制：gdi / dxgi 仅 Windows，x11 仅 Linux（且不支持 Wayland 会话）；auto 按平台选。指定一条不适用的后端时，它起不来就是整节课真的没帧。"));
 
   const row = document.createElement("div");
   row.style.marginTop = "8px";

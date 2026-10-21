@@ -30,10 +30,15 @@ tiny_http = "0.12"
 # 只有 a-audio 用得到它：跨平台取麦克风。不放 reqwest/portaudio 一类，
 # 是因为这个依赖只该长在一个适配器子进程里，客户端与服务端的树保持不动。
 cpal = "0.18"
-# 只有 a-screen 用得到这两个，同理不长进主树：
+# 只有 a-screen 用得到这几个，同理不长进主树：
 # png 是纯 Rust 编解码（关键帧 blob 要能被 <img src> 直接显示，第三方写来的 PNG 也要能读）；
-# windows 只负责 GDI / DXGI 抓屏绑定，且只在 Windows 侧编译（见 a-screen/Cargo.toml 的 target 段）。
+# windows 只负责 GDI / DXGI 抓屏绑定，x11rb 只负责 Linux 的 X11 抓屏，
+# 两者都按 target 段编译（见 a-screen/Cargo.toml），不会互相拖进对方的依赖树。
 png = "0.18"
+# 只有 a-screen 的 Linux 后端用得到：纯 Rust X11 协议实现，不链 libxcb，
+# 所以 CI 不需要额外的系统库（X11 服务本身由 Xvfb 提供）。
+# composite 用于"有合成器时抓 overlay 窗口"，否则根窗口只有背景。
+x11rb = { version = "0.13", features = ["composite"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

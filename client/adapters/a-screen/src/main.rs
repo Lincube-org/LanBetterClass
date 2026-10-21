@@ -5,7 +5,8 @@
 //! 判定与落盘代码，所以下游（timeline / digest / 观察端）不必区分谁采的。
 //!
 //! 两条输入路径：
-//! - `source: "device"`（默认）真抓屏，后端由 `params.capture` 选（auto / gdi / dxgi）；
+//! - `source: "device"`（默认）真抓屏，后端由 `params.capture` 选
+//!   （Windows: auto / gdi / dxgi；Linux: auto / x11）；
 //! - `source: "fixture"` + `fixture_dir: "某个 PNG 目录"` 按文件名次序回放。
 //!   CI runner 上没有桌面，"变化检测到底有没有生效"这种判断只能靠可复现的图钉住——
 //!   这与 a-audio 靠 wav 回放是同一件事，不是演示后门。
@@ -64,7 +65,7 @@ fn main() {
             restart: RestartPolicy { max_retries: 2, backoff_ms: 2_000 },
             notes: vec![
                 "需要桌面会话：无显示器 / RDP 下 gdi 可能给黑屏、dxgi 通常直接不可用；capture=auto 会退回 gdi 并把原因自述进 session.open".into(),
-                "Linux 只支持 fixture 回放，设备抓屏未实现（X11 / PipeWire 是另一次改动）".into(),
+                "Linux 设备抓屏走 X11 根窗口（XGetImage）；Wayland 会话明确拒绝，PipeWire 后端尚未实现".into(),
                 "blob 是 PNG（RGB，关掉行内预测）；默认不降采样，一节课的体积随画面变化次数与 min_interval_ms 走".into(),
                 "两道门限各拦一类误判：min_dist=dHash 汉明距离，min_mad=网格平均亮度差（整页从黑变白只有后者看得见）".into(),
                 "只采变化触发的关键帧，不做连续视频".into(),

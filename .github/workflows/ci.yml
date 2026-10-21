@@ -26,12 +26,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       # a-audio 用 cpal 取麦克风：Linux 侧的 ALSA 绑定在编译期需要系统头文件；
+      # a-screen 的 Linux X11 后端是纯 Rust（x11rb），不需要开发包，但 ci-screen.sh
+      # 会起一个 Xvfb 并改根窗口底色来验证"真抓到了桌面"，所以运行期需要这些工具。
       # Windows 侧走纯 Rust 的 windows 绑定，runner 自带，不需要额外安装。
       - name: Install system deps (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
+          sudo apt-get install -y libasound2-dev pkg-config xvfb x11-xserver-utils x11-utils
 
       - uses: Swatinem/rust-cache@v2
         with:

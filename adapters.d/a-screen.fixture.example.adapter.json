@@ -8,7 +8,7 @@
     "source": "fixture",
     "fixture_dir": "REPLACE_ME/一节课的屏幕截图目录",
     "speed": 20,
-    "capture": "gdi",
+    "capture": "auto",
     "monitor": 0,
     "screen": { "poll_ms": 200, "min_interval_ms": 0, "min_dist": 3, "min_mad": 2, "max_width": 1280 },
     "note": "回放示例：目录里放一排 .png（按文件名次序当课堂时间），没有桌面也能验同一条链路——CI 就这么测变化检测。min_interval_ms 设 0 才不会把相邻几张 throttle 掉。",

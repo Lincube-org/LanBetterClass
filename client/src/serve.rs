@@ -377,9 +377,11 @@ fn vad_is_sane(vad: &Value) -> Result<(), String> {
 /// `tools/ci-screen.sh` ⑧ 交叉断言（核心不能依赖适配器 crate，所以只能在文本层面钓）。
 fn screen_is_sane(params: &serde_json::Map<String, Value>) -> Result<(), String> {
     if let Some(c) = params.get("capture") {
-        let s = c.as_str().ok_or("params.capture 必须是字符串（auto / gdi / dxgi）")?;
-        if !matches!(s, "auto" | "gdi" | "dxgi") {
-            return Err(format!("params.capture 只认 auto / gdi / dxgi，收到 {s:?}"));
+        let s = c.as_str().ok_or("params.capture 必须是字符串（auto / gdi / dxgi / x11）")?;
+        // 清单必须与 capture.rs::BACKENDS 一致；平台是否适用由适配器在 open() 时明确报错，
+        // 这里拦的是"写了个根本不存在的名字"。
+        if !matches!(s, "auto" | "gdi" | "dxgi" | "x11") {
+            return Err(format!("params.capture 只认 auto / gdi / dxgi / x11，收到 {s:?}"));
         }
     }
     if let Some(v) = params.get("monitor").and_then(|x| x.as_u64()) {
@@ -646,8 +648,10 @@ mod tests {
         assert!(screen_is_sane(&p(json!({ "monitor": 3 }))).is_ok());
         assert!(screen_is_sane(&p(json!({ "monitor": 99 }))).is_err());
         assert!(screen_is_sane(&p(json!({ "monitor": "主屏" }))).is_err());
+        // 跨平台清单里的四条都该被接受；平台不适用由适配器 open() 明确拒绝。
+        assert!(screen_is_sane(&p(json!({ "capture": "x11" }))).is_ok());
         // 不存在的后端：起不来只会让这一节课默默没帧，当场报错比那个便宜。
-        assert!(screen_is_sane(&p(json!({ "capture": "x11" }))).is_err());
+        assert!(screen_is_sane(&p(json!({ "capture": "quartz" }))).is_err());
         assert!(screen_is_sane(&p(json!({ "capture": true }))).is_err());
         // poll_ms=0 会被钳成 1ms，等于每毫秒抓一屏。
         assert!(screen_is_sane(&p(json!({ "screen": { "poll_ms": 0 } }))).is_err());

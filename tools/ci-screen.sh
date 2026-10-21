@@ -11,8 +11,12 @@
 # 反向断言同样重要：静止的一节课必须只有一帧。"没变化"如果能被伪装成"很多变化"，
 # 一节课就变成几千张几乎一样的截图，那份证据从此没人看。
 #
-# 设备抓屏那条分支（capture=gdi / dxgi）在这里只能断"不许崩、不许报假引用"——
-# runner 上有没有桌面是机器的事，不是代码的事。真机验证见 agent/README.md。
+# 设备抓屏分两半：
+# - Windows runner（capture=gdi）只能断"不许崩、不许报假引用"，有没有真桌面是机器的事；
+# - Linux runner 由本脚本起一个 Xvfb（1280x720x24），用 xsetroot 改两次底色，
+#   真走 capture=x11 的 GetImage 路径，断"真采到 1280x720、两次变化被看见、收尾不丢"。
+#   另起一场 Wayland 会话变量，断它明确拒绝而不是采一节黑屏。
+# 真机（一体机 / 真 X11 桌面 / Wayland）验证见 agent/README.md。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -34,8 +38,8 @@ ADAPTER="$BIN/a-screen$EXE"
 rm -rf "$WORK"
 mkdir -p "$WORK/slides" "$WORK/still" "$WORK/slow" \
          "$WORK/adp-slides" "$WORK/adp-still" "$WORK/adp-nodev" "$WORK/adp-cut" "$WORK/adp-throttle" \
-         "$WORK/adp-reload" "$WORK/data-slides" "$WORK/data-still" "$WORK/data-nodev" \
-         "$WORK/data-cut" "$WORK/data-throttle" "$WORK/data-reload"
+         "$WORK/adp-reload" "$WORK/adp-x11" "$WORK/data-slides" "$WORK/data-still" "$WORK/data-nodev" \
+         "$WORK/data-cut" "$WORK/data-throttle" "$WORK/data-reload" "$WORK/data-x11" "$WORK/data-wayland"
 
 # ---- 造两排"课件"：翻页要能被看见，静止不能被看成翻页 ----
 python3 - "$WORK" <<'PY'
@@ -150,6 +154,16 @@ decl('adp-cut', dict(fixture('slow', poll_ms=600), speed=1))
 decl('adp-throttle', fixture('slides', poll_ms=100, min_interval_ms=300))
 # ⑥ 教师改门限：先给一份能跑起来的，再由写接口改它
 decl('adp-reload', fixture('slides', min_dist=6, min_mad=4))
+# ⑨ Linux X11 设备抓屏：脚本稍后在 Xvfb 上跑，Windows 侧跳过
+d = json.loads(json.dumps(src))
+d['params'].update({
+    'source': 'device', 'capture': 'x11', 'monitor': 0,
+    'screen': {'poll_ms': 100, 'min_interval_ms': 0, 'min_dist': 2, 'min_mad': 1,
+               'max_width': 0, 'max_frames_per_lesson': 0, 'max_bytes_per_lesson': 0,
+               'emit_dirty': True},
+})
+json.dump(d, open(os.path.join(work, 'adp-x11', 'a-screen.adapter.json'), 'w', encoding='utf-8'),
+          ensure_ascii=False, indent=2)
 PY
 
 run_lesson() {  # run_lesson <声明目录> <数据目录> <秒数> <日志名>
@@ -192,7 +206,7 @@ H_OK=$(curl -s -X POST -H 'Content-Type: application/json' \
   -o "$WORK/p6.json" -w '%{http_code}' "http://127.0.0.1:$PORT6/api/adapter/a-screen.adapter.json")
 # 不存在的后端：起不来只会让一节课安静地没帧，必须当场被拒
 H_BAD=$(curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"params":{"capture":"x11"}}' \
+  -d '{"params":{"capture":"quartz"}}' \
   -o "$WORK/p6bad.json" -w '%{http_code}' "http://127.0.0.1:$PORT6/api/adapter/a-screen.adapter.json")
 # dHash 只有 64 位：写 999 不是"更宽松"
 H_BIG=$(curl -s -X POST -H 'Content-Type: application/json' \
@@ -223,6 +237,50 @@ BLOB_N=$(curl -s -o /dev/null -w '%{http_code}' \
 echo "$BLOB_N" > "$WORK/blob.traversal"
 kill $SRV7 2>/dev/null || true; trap - EXIT
 
+echo "--- ⑨ Linux X11 设备抓屏：Xvfb 上真抓、真变化、真收尾 ---"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    echo "⑨ Windows：跳过 X11 实抓（③ 已覆盖 gdi 设备路径）" ;;
+  *)
+    Xvfb :99 -screen 0 1280x720x24 -nolisten tcp > "$WORK/xvfb.log" 2>&1 &
+    XVFB_PID=$!
+    trap 'kill $XVFB_PID 2>/dev/null || true' EXIT
+    READY=0
+    for _ in $(seq 1 50); do
+      DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && { READY=1; break; }
+      sleep 0.1
+    done
+    if [ "$READY" != 1 ]; then
+      echo "FAIL ⑨ Xvfb 没起来"
+      cat "$WORK/xvfb.log" || true
+      exit 1
+    fi
+    # 先给一块确定的底色，再在课中换两次：这两次必须被 GetImage 看见。
+    # 显式清掉 Wayland 相关变量：这一场验的是 X11 路径，runner 上残留的会话变量不该改走拒绝分支。
+    DISPLAY=:99 xsetroot -solid '#101010'
+    env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE DISPLAY=:99 "$CLIENT" run \
+      --data "$WORK/data-x11" --adapters "$WORK/adp-x11" \
+      --lesson examples/lesson.demo.json --max-seconds 6 < /dev/null > "$WORK/run9.log" 2>&1 &
+    RUN9=$!
+    sleep 2
+    DISPLAY=:99 xsetroot -solid '#f0f0f0'
+    sleep 2
+    DISPLAY=:99 xsetroot -solid '#101010'
+    wait $RUN9 || true
+    tail -4 "$WORK/run9.log"
+    DISPLAY=:99 "$CLIENT" export --data "$WORK/data-x11" --lesson "$LESSON" > "$WORK/run9.export" 2>&1 || true
+
+    echo "--- ⑩ Wayland 会话：X11 抓屏必须明确拒绝，而不是采一节黑屏 ---"
+    DISPLAY=:99 WAYLAND_DISPLAY=wayland-0 XDG_SESSION_TYPE=wayland "$CLIENT" run \
+      --data "$WORK/data-wayland" --adapters "$WORK/adp-x11" \
+      --lesson examples/lesson.demo.json --max-seconds 3 \
+      < /dev/null > "$WORK/run10.log" 2>&1 || true
+    tail -4 "$WORK/run10.log"
+    DISPLAY=:99 "$CLIENT" export --data "$WORK/data-wayland" --lesson "$LESSON" > "$WORK/run10.export" 2>&1 || true
+    kill $XVFB_PID 2>/dev/null || true
+    trap - EXIT ;;
+esac
+
 # ---- 清单交叉检查：三处都写着同一批后端名 ----
 echo "--- ⑧ 后端清单：适配器、写接口校验、观察端下拉框必须一致 ----"
 python3 - <<'PY'
@@ -243,8 +301,8 @@ def need(c, m):
 
 m = re.search(r'pub const BACKENDS: \[[^\]]*\]\s*=\s*\[([^\]]*)\]', caps)
 need(m, 'capture.rs 里的 BACKENDS 清单没找到——它是这条链的唯一出处')
-have = sorted(re.findall(r'"([a-z]+)"', m.group(1))) if m else []
-need(have == ['auto', 'dxgi', 'gdi'], f'BACKENDS 应当是 auto/dxgi/gdi，实得 {have}')
+have = sorted(re.findall(r'"([a-z0-9]+)"', m.group(1))) if m else []
+need(have == ['auto', 'dxgi', 'gdi', 'x11'], f'BACKENDS 应当是 auto/dxgi/gdi/x11，实得 {have}')
 
 # 注意末项背没有 `|`：把分隔符写进重复单元会让这一条永远匹不上，守卫变成摆设
 served = re.search(r'matches!\(\s*s\s*,\s*((?:"[a-z]+"\s*\|\s*)*"[a-z]+")\s*\)', serve)
@@ -252,7 +310,7 @@ need(served, 'serve.rs 里找不到 capture 的白名单（校验漂移了就是
 in_serve = sorted(set(re.findall(r'"([a-z]+)"', served.group(1)))) if served else []
 need(in_serve == have, f'serve.rs 认的后端与适配器不一致：{in_serve} ≠ {have}')
 
-opts = re.search(r'\[\s*"auto",\s*"gdi",\s*"dxgi"\s*\]', app)
+opts = re.search(r'\[\s*"auto",\s*"gdi",\s*"dxgi",\s*"x11"\s*\]', app)
 need(opts, 'app.js 的下拉框选项与 BACKENDS 不再一致：改适配器清单要同时改界面')
 
 need(decl['params']['capture'] in have, f'默认声明写了个不存在的后端：{decl["params"]["capture"]}')
@@ -284,7 +342,7 @@ if fails:
     for f in fails:
         print('  -', f)
     sys.exit(1)
-print('清单一致：auto / gdi / dxgi 三处对齐，调参键与表单对齐')
+print('清单一致：auto / gdi / dxgi / x11 三处对齐，调参键与表单对齐')
 PY
 
 # ---- 主断言：从导出与事件里读事实 ----
@@ -424,7 +482,7 @@ else:
     p3 = exported(d3)
     if p3 and 'a-screen' in p3['sources']:
         b = p3['sources']['a-screen']['screen'].get('backend')
-        need(b in ('gdi', 'dxgi'), f"③ 设备路径必须自述用了哪条后端：{p3['sources']['a-screen']['screen']}")
+        need(b in ('gdi', 'dxgi', 'x11'), f"③ 设备路径必须自述用了哪条后端：{p3['sources']['a-screen']['screen']}")
     print(f"③ 这台 runner 有桌面：采到 {len(kf3)} 帧")
 
 # ---------- ④ 中途下课 ----------
@@ -498,6 +556,48 @@ disk = open(os.path.join(work, 'data-slides', 'lessons', 'L-demo-0001', 'blobs',
 need(got == disk, f'⑦ 经 HTTP 回来的字节与盘上的不一样（{len(got)} vs {len(disk)}）：<img> 会显示成破图')
 trav = open(os.path.join(work, 'blob.traversal'), encoding='utf-8').read().strip()
 need(trav in ('400', '404'), f'⑦ 路径穿越没被拦住：{trav}')
+
+# ---------- ⑨ Linux X11 真抓 ----------
+d9 = os.path.join(work, 'data-x11')
+if os.path.exists(d9):
+    ev9 = events(d9)
+    kf9 = kinds_of(ev9, 'screen.keyframe')
+    # 开场一帧 + 课中两次换底色；少于此说明 GetImage 没真看到根窗口的变化。
+    need(len(kf9) >= 3, f'⑨ Xvfb 上该有开场 + 两次变化，实得 {len(kf9)} 帧')
+    need(all(k['envelope']['payload'].get('source_width') == 1280
+             and k['envelope']['payload'].get('source_height') == 720 for k in kf9),
+         f'⑨ 帧尺寸必须是 Xvfb 的 1280x720，实得 '
+         f'{[(k["envelope"]["payload"].get("source_width"), k["envelope"]["payload"].get("source_height")) for k in kf9]}')
+    mads = [k['envelope']['payload'].get('mad') for k in kf9[1:]]
+    need(sum(1 for m in mads if m is not None and m >= 50) >= 2,
+         f'⑨ 两次黑白切换都该被均差门限看见，实得 mad={mads}')
+    need(all(r in blobs(d9) for r in refs_of(ev9)), '⑨ X11 报了引用却没有文件')
+    c9 = close_of(ev9)
+    need(c9 and c9.get('chunks') == len(kf9), f'⑨ 收课帧数与事件数不一致：{c9}')
+    need(c9 and c9.get('stream_errors') == 0, f'⑨ X11 抓屏不该有流错误：{c9}')
+    need(c9 and c9.get('unchanged', 0) >= 1, f'⑨ 静止期间的无变化必须数得出来：{c9}')
+    p9 = exported(d9)
+    need(p9 is not None, '⑨ 导出没写出 ai_payload.json（看 run9.export）')
+    if p9:
+        h9 = p9['sources']['a-screen']['screen']
+        need(h9.get('input') == 'device', f'⑨ 自述没说清这是真设备：{h9}')
+        need(h9.get('backend') == 'x11', f'⑨ 自述必须写明用了 x11：{h9}')
+        # Xvfb 上没有合成器，走的必须是根窗口；这条也防止"有合成器"的判断把 CI 悄悄带偏。
+        need(h9.get('target') == 'root', f'⑨ Xvfb 上应抓根窗口（无合成器），实得 {h9.get("target")!r}')
+        need(h9.get('width') == 1280 and h9.get('height') == 720, f'⑨ 自述尺寸与 Xvfb 不符：{h9}')
+    log9 = open(os.path.join(work, 'run9.log'), encoding='utf-8', errors='ignore').read()
+    need('panic' not in log9.lower(), '⑨ X11 设备路径 panic 了')
+else:
+    print('⑨ 非 Linux runner：跳过 X11 实抓（Windows 的 gdi 路径归 ③）')
+
+# ---------- ⑩ Wayland 必须拒绝 ----------
+d10 = os.path.join(work, 'data-wayland')
+if os.path.exists(d10):
+    ev10 = events(d10, adapter='a-screen')
+    need(not ev10, f'⑩ Wayland 会话下 x11 必须明确拒绝，不能产出事件：{ev10[:1]}')
+    log10 = open(os.path.join(work, 'run10.log'), encoding='utf-8', errors='ignore').read()
+    need('Wayland' in log10, '⑩ 拒绝原因要说清是 Wayland，而不是一句泛泛的连接失败')
+    need('panic' not in log10.lower(), '⑩ Wayland 分支 panic 了：明确拒绝不该把进程弄崩')
 
 if fails:
     print('FAIL 关键帧守卫')

@@ -56,11 +56,14 @@
   <div class="box b-done"><span class="tag done">已验证</span><h3>a-audio</h3>
     <p>cpal 开默认输入设备（WASAPI / ALSA）→ 混单声道，能量门限 VAD 按话轮切段进 blobs/。<b>还没做</b>：不重采样（设备给 48k 就记 48k）、不压缩</p></div>
   <div class="box b-part"><span class="tag part">已实现未实测</span><h3>a-screen</h3>
-    <p>希沃那一屏：GDI BitBlt 或 DXGI 桌面复制 → <b>只在画面真变了时</b>落一张 PNG。两道门限是“或”关系：
+    <p>希沃那一屏：Windows 走 GDI BitBlt 或 DXGI 桌面复制，Linux 走 X11 <code>GetImage</code>（有合成器时抓 Composite overlay，否则抓根窗口）→
+       <b>只在画面真变了时</b>落一张 PNG。两道门限是“或”关系：
        dHash（≤ 64）认结构变化但看不见整块黑变白，均差（≤ 255）补这一刀。不做连续视频。
-       <code>source:"fixture"</code> 回放一排 PNG 走同一套判定，这是 CI 能钉住的那一半；而 Windows runner 上
-       <code>gdi</code> 确实开到了一块 1920×1080 桌面并落了一张真 PNG（61 次询问里 60 次判为“无变化”）。
-       <b>未实测</b>：真一体机上的 gdi/dxgi 两条后端、多屏选择与 DPI</p></div>
+       <code>source:"fixture"</code> 回放一排 PNG 走同一套判定；Windows runner 上 <code>gdi</code>
+       真开到一块 1920×1080 桌面并落了一张真 PNG（61 次询问里 60 次判为“无变化”），Linux runner 上
+       CI 起 Xvfb、改两次底色，断到 <code>x11</code> 真采到 1280×720 且两次变化都被看见。
+       Wayland 会话明确拒绝（XWayland 根窗口不是整块桌面），PipeWire 后端未实现。
+       <b>未实测</b>：真一体机上的 gdi/dxgi、真 X11 桌面、多屏选择与 DPI</p></div>
   <div class="box b-tbd"><span class="tag tbd">需求未定</span><h3>a-eval / a-courseware</h3>
     <p>评估数据是什么还不知道；课件原文件可直接解析，因此不需要 OCR 屏幕</p></div>
 </div>
@@ -117,7 +120,7 @@
 </div>
 
 <div class="warn"><b>还没证明的事：</b>"低开销"目前只测到事件总线（真实节奏 0.02% CPU / 11 MB 工作集，Core Ultra 5 226V，非一体机）。
-音频编码未实现；屏幕采集已在 CI 的 Windows runner 上真采到过一帧，但从未在目标一体机上跑过（多屏 / DPI / 长时间连续板书都是 fixture 供不了的），而它们才是开销主体；
+音频编码未实现；屏幕采集已在 Windows runner（GDI）与 Linux runner（Xvfb + X11）上真采到过帧，但从未在目标一体机上跑过（多屏 / DPI / 长时间连续板书都是 fixture 与 Xvfb 供不了的），而它们才是开销主体；
 目标一体机是 8 代 i5 级 CPU + 红外无压感触控，很多前提还没在真机上确认。</div>
 </body>
 </html>

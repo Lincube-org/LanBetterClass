@@ -113,13 +113,13 @@ jobs:
               sknown = set(re.findall(r'(?:get|num)\("([a-z_]+)"', m.group(0)))
               need(snames <= sknown, f'UI 里这些抓屏参数适配器不认：{sorted(snames - sknown)}（适配器={sorted(sknown)}）')
 
-          # 2c) capture 下拉框的三个取值就是 capture.rs 的 BACKENDS；对不上 = 能写进去但起不来
+          # 2c) capture 下拉框的取值就是 capture.rs 的 BACKENDS；对不上 = 能写进去但起不来
           bm = re.search(r'pub const BACKENDS: \[[^\]]*\]\s*=\s*\[([^\]]*)\]', caps)
           need(bm, 'capture.rs 里的 BACKENDS 清单没找到——它是这条链的唯一出处')
           if bm:
-              be = sorted(re.findall(r'"([a-z]+)"', bm.group(1)))
-              need(be == ['auto', 'dxgi', 'gdi'], f'BACKENDS 应当是 auto/dxgi/gdi，实得 {be}')
-              need(re.search(r'\[\s*"auto",\s*"gdi",\s*"dxgi"\s*\]', app),
+              be = sorted(re.findall(r'"([a-z0-9]+)"', bm.group(1)))
+              need(be == ['auto', 'dxgi', 'gdi', 'x11'], f'BACKENDS 应当是 auto/dxgi/gdi/x11，实得 {be}')
+              need(re.search(r'\[\s*"auto",\s*"gdi",\s*"dxgi",\s*"x11"\s*\]', app),
                    'app.js 的下拉框选项与 BACKENDS 不再一致：改适配器清单要同时改界面')
 
           # 3) 引用的每个 #id 都得存在（typo 型静默失败：拿到 null 才发现）
