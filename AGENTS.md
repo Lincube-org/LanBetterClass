@@ -155,10 +155,12 @@ workflow, `.github/workflows/agent.yml`.
   lesson, and the tuning loop over `screen.min_dist`. The reverse assertion is the point: "nothing changed"
   masquerading as "many changes" turns the evidence into thousands of near-identical screenshots nobody opens.
   The device branch is no longer just "must not crash": on `windows-latest`, `gdi` opens a real 1920×1080
-  desktop, writes one PNG (~2.3 MB), and reads 60 of 61 polls as `unchanged` — so ③ doubles as a live check
+  desktop, writes one PNG (730 KB on that desktop after switching to the `Up` filter; the same frame was
+  ~2.3 MB with `NoFilter`), and reads 60 of 61 polls as `unchanged` — so ③ doubles as a live check
   of the gates and the writer. On `ubuntu-latest`, ⑨ starts an Xvfb (1280×720×24), flips the root background
-  twice via `xsetroot`, and asserts `capture=x11` really returns 1280×720 frames, sees both changes through
-  the `mad` gate, and closes with `stream_errors == 0`; ⑩ sets `WAYLAND_DISPLAY` and asserts the adapter
+  twice via `xsetroot`, and asserts `capture=x11` really returns 1280×720 frames (15–19 KB per solid frame after
+  the filter change), sees both changes through the `mad` gate, and closes with `stream_errors == 0`; ⑩ sets
+  `WAYLAND_DISPLAY` and asserts the adapter
   refuses instead of emitting a black-screen lesson. ⑧ cross-checks the three copies of the backend list.
   This is why the Linux CI step installs `xvfb` / `x11-xserver-utils` / `x11-utils` at runtime — `x11rb` is
   pure Rust, so there are still no X11 development headers in the build. Neither path checks a real

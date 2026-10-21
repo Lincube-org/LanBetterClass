@@ -23,7 +23,8 @@ pub struct Pixmap {
 ///
 /// `Up` + `Fast`：屏幕关键帧以大片同色与纵向重复为主，Up 过滤把"这一行与上一行相同"
 /// 变成零；否则 `Fast` 对非零纯色会退化成存储块——CI 上 1280×720 纯色帧实测 2.7 MB，
-/// 而全黑帧只有 14 KB。多一遍线性减法比一次抓屏拷贝便宜得多，换来的是整节课的体积。
+/// 而全黑帧只有 14 KB。Up 后同样的帧是 15–19 KB，1080p runner 桌面帧也从 2.36 MB 降到 730 KB。
+/// 多一遍线性减法比一次抓屏拷贝便宜得多，换来的是整节课的体积。
 pub fn write(path: &Path, width: usize, height: usize, rgb: &[u8]) -> std::io::Result<u64> {
     if width == 0 || height == 0 {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("空图像 {width}x{height}")));

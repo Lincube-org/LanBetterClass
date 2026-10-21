@@ -97,7 +97,7 @@
   <div class="box b-done"><h3>音频</h3><p>Opus 16k 单声道 45 分钟 ≈ <b>5–10 MB</b>（实测 300 段 / 9.2 MB 未压缩 PCM 口径）</p></div>
   <div class="box b-done"><h3>事件</h3><p>笔迹+评估+健康 ≈ <b>&lt; 1 MB</b>。带宽从来不是瓶颈</p></div>
   <div class="box b-part"><h3>屏幕</h3><p>只存<b>变化时刻</b>的关键帧，不存视频。一张 1080p 全屏 PNG 实测
-    <b>≈ 2.3 MB</b>（不降采样的时候），所以帧数是唯一体积变量：一节课存多少张由两道门限与
+    <b>≈ 0.7 MB</b>（CI runner 桌面、Up 过滤、不降采样；同一帧 NoFilter 时 ≈ 2.3 MB），所以帧数是唯一体积变量：一节课存多少张由两道门限与
     <code>min_interval_ms</code> 决定，<code>max_width</code> / <code>max_frames / max_bytes</code> 可封顶；撞顶不丢数据，而是在收课记录里记
     <code>capped</code>，健康表与摘要会直说“之后的画面没存档”</p></div>
   <div class="box b-plan"><h3>视频</h3><p>1080p 一节课 <b>1.35–2.7 GB</b>，是音频的 150–300 倍 → 一旦要做连续视频，架构被迫上边缘盒。我们没有边缘盒，所以不做</p></div>
