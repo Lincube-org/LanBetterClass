@@ -510,6 +510,7 @@ mod x11 {
         gmask: u32,
         bmask: u32,
         errs: usize,
+        debugged: u8,
     }
 
     pub fn opened(monitor: usize) -> Result<super::Opened, String> {
@@ -570,7 +571,7 @@ mod x11 {
             let display = std::env::var("DISPLAY").unwrap_or_default();
             let (conn, screen_num) = x11rb::connect(None)
                 .map_err(|e| format!("连不上 X11 display（DISPLAY={display:?}）：{e}"))?;
-            let (root, w, h, depth, bpp, stride, lsb, (rmask, gmask, bmask)) = {
+            let (root, w, h, depth, bpp, stride, lsb, order, (rmask, gmask, bmask)) = {
                 let setup = conn.setup();
                 let screen = &setup.roots[screen_num];
                 if screen.width_in_pixels == 0 || screen.height_in_pixels == 0 {
@@ -617,6 +618,7 @@ mod x11 {
                     fmt.bits_per_pixel,
                     stride,
                     u8::from(setup.image_byte_order) == 0,
+                    u8::from(setup.image_byte_order),
                     (visual.red_mask, visual.green_mask, visual.blue_mask),
                 )
             };
@@ -638,7 +640,7 @@ mod x11 {
                 (root, "root", None)
             };
             eprintln!(
-                "[a-screen] X11 就绪：display={display} {target} {w}x{h}，depth={depth}，{bpp}bpp，{} 字节/行",
+                "[a-screen] X11 就绪：display={display} {target} {w}x{h}，depth={depth}，{bpp}bpp，{} 字节/行，image_order={order}，masks={rmask:06x}/{gmask:06x}/{bmask:06x}",
                 stride
             );
             Ok((
@@ -657,6 +659,7 @@ mod x11 {
                     gmask,
                     bmask,
                     errs: 0,
+                    debugged: 0,
                 },
                 fallback,
             ))
@@ -683,6 +686,11 @@ mod x11 {
                     "X11 GetImage 回来的 depth 是 {}，预期 {}（overlay 与根窗口格式不一致）",
                     reply.depth, self.depth
                 ));
+            }
+            self.debugged = self.debugged.wrapping_add(1);
+            if self.debugged == 1 || self.debugged % 20 == 0 {
+                let n = reply.data.len().min(8);
+                eprintln!("[a-screen] X11 第 {} 次询问前 {n} 字节：{:02x?}", self.debugged, &reply.data[..n]);
             }
             let (w, h, bpp) = (self.w as usize, self.h as usize, self.bpp as usize);
             let bytes_per_pixel = bpp / 8;
