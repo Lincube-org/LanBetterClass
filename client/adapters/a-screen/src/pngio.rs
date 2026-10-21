@@ -21,8 +21,9 @@ pub struct Pixmap {
 
 /// 写一张 RGB PNG，返回落盘字节数。
 ///
-/// `NoFilter` + `Fast`：屏幕内容大片同色，行内预测能省的没多少，代价却是每帧都在
-/// 采集进程里多烧一遍 CPU——那台机器同时在跑希沃。宁可文件大一点。
+/// `Up` + `Fast`：屏幕关键帧以大片同色与纵向重复为主，Up 过滤把"这一行与上一行相同"
+/// 变成零；否则 `Fast` 对非零纯色会退化成存储块——CI 上 1280×720 纯色帧实测 2.7 MB，
+/// 而全黑帧只有 14 KB。多一遍线性减法比一次抓屏拷贝便宜得多，换来的是整节课的体积。
 pub fn write(path: &Path, width: usize, height: usize, rgb: &[u8]) -> std::io::Result<u64> {
     if width == 0 || height == 0 {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("空图像 {width}x{height}")));
@@ -38,7 +39,7 @@ pub fn write(path: &Path, width: usize, height: usize, rgb: &[u8]) -> std::io::R
     enc.set_color(ColorType::Rgb);
     enc.set_depth(BitDepth::Eight);
     enc.set_compression(Compression::Fast);
-    enc.set_filter(Filter::NoFilter);
+    enc.set_filter(Filter::Up);
     let mut w = enc.write_header().map_err(io_err)?;
     w.write_image_data(rgb).map_err(io_err)?;
     w.finish().map_err(io_err)?;

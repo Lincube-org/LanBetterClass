@@ -510,7 +510,6 @@ mod x11 {
         gmask: u32,
         bmask: u32,
         errs: usize,
-        debugged: u8,
     }
 
     pub fn opened(monitor: usize) -> Result<super::Opened, String> {
@@ -659,7 +658,6 @@ mod x11 {
                     gmask,
                     bmask,
                     errs: 0,
-                    debugged: 0,
                 },
                 fallback,
             ))
@@ -686,11 +684,6 @@ mod x11 {
                     "X11 GetImage 回来的 depth 是 {}，预期 {}（overlay 与根窗口格式不一致）",
                     reply.depth, self.depth
                 ));
-            }
-            self.debugged = self.debugged.wrapping_add(1);
-            if self.debugged == 1 || self.debugged % 20 == 0 {
-                let n = reply.data.len().min(8);
-                eprintln!("[a-screen] X11 第 {} 次询问前 {n} 字节：{:02x?}", self.debugged, &reply.data[..n]);
             }
             let (w, h, bpp) = (self.w as usize, self.h as usize, self.bpp as usize);
             let bytes_per_pixel = bpp / 8;
