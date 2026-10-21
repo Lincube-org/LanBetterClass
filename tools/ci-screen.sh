@@ -268,6 +268,8 @@ case "$(uname -s)" in
     DISPLAY=:99 xsetroot -solid '#101010'
     wait $RUN9 || true
     tail -4 "$WORK/run9.log"
+    echo "⑨ 每帧大小（纯色应远小于整屏原图；持续接近原图说明抓到的是噪声或错位）："
+    grep '关键帧' "$WORK/run9.log" || true
     DISPLAY=:99 "$CLIENT" export --data "$WORK/data-x11" --lesson "$LESSON" > "$WORK/run9.export" 2>&1 || true
 
     echo "--- ⑩ Wayland 会话：X11 抓屏必须明确拒绝，而不是采一节黑屏 ---"
@@ -304,10 +306,11 @@ need(m, 'capture.rs 里的 BACKENDS 清单没找到——它是这条链的唯�
 have = sorted(re.findall(r'"([a-z0-9]+)"', m.group(1))) if m else []
 need(have == ['auto', 'dxgi', 'gdi', 'x11'], f'BACKENDS 应当是 auto/dxgi/gdi/x11，实得 {have}')
 
-# 注意末项背没有 `|`：把分隔符写进重复单元会让这一条永远匹不上，守卫变成摆设
-served = re.search(r'matches!\(\s*s\s*,\s*((?:"[a-z]+"\s*\|\s*)*"[a-z]+")\s*\)', serve)
+# 注意末项背后没有 `|`：把分隔符写进重复单元会让这一条永远匹不上，守卫变成摆设。
+# 后端名允许数字（x11）：只写 [a-z] 会让白名单静默匹配失败，看起来像"校验漂移了"。
+served = re.search(r'matches!\(\s*s\s*,\s*((?:"[a-z0-9]+"\s*\|\s*)*"[a-z0-9]+")\s*\)', serve)
 need(served, 'serve.rs 里找不到 capture 的白名单（校验漂移了就是"能写进去但起不来"）')
-in_serve = sorted(set(re.findall(r'"([a-z]+)"', served.group(1)))) if served else []
+in_serve = sorted(set(re.findall(r'"([a-z0-9]+)"', served.group(1)))) if served else []
 need(in_serve == have, f'serve.rs 认的后端与适配器不一致：{in_serve} ≠ {have}')
 
 opts = re.search(r'\[\s*"auto",\s*"gdi",\s*"dxgi",\s*"x11"\s*\]', app)
