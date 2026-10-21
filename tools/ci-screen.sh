@@ -270,7 +270,7 @@ case "$(uname -s)" in
     wait $RUN9 || true
     tail -4 "$WORK/run9.log"
     echo "⑨ 每帧大小（纯色应远小于整屏原图；持续接近原图说明抓到的是噪声或错位）："
-    grep '关键帧' "$WORK/run9.log" || true
+    grep -E 'X11 就绪|前 8 字节|关键帧' "$WORK/run9.log" || true
     # 纯色底色下每个通道都该是常数；打印几个采样点，噪声在哪个通道一眼可见。
     python3 - "$WORK/data-x11/lessons/$LESSON/blobs" <<'PY'
 import glob, struct, sys, zlib
@@ -289,7 +289,15 @@ for p in sorted(glob.glob(sys.argv[1] + '/*.png'))[:3]:
     stride = w * 3 + 1
     pts = [(10, 10), (w // 2, h // 2), (w - 10, h - 10)]
     vals = [tuple(raw[y * stride + 1 + x * 3:y * stride + 4 + x * 3]) for x, y in pts]
-    print('  PNG', p.split('/')[-1], f'{w}x{h}', 'samples(RGB)=', vals)
+    # 全图统计：纯色帧每个通道 min==max；若只有某个通道散开，优先怀疑字节序/填充位。
+    ch = [[], [], []]
+    for y in range(0, h, 7):
+        row = raw[y * stride + 1:(y + 1) * stride]
+        for c in range(3):
+            ch[c].extend(row[c::3])
+    stats = [(min(v), max(v), sum(v) // len(v)) for v in ch]
+    print('  PNG', p.split('/')[-1], f'{w}x{h}', 'samples(RGB)=', vals,
+          'idat/raw=', (len(idat), len(raw)), 'channel(min,max,mean)=', stats)
 PY
     DISPLAY=:99 "$CLIENT" export --data "$WORK/data-x11" --lesson "$LESSON" > "$WORK/run9.export" 2>&1 || true
 
